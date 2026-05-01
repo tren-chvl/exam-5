@@ -1,334 +1,98 @@
 #define _GNU_SOURCE
 #include "bsq.h"
 #include <stdlib.h>
-#include <sys/types.h>
 
-static size_t my_strlen(const char *s)
+static int parse_header(char *l, t_map *m)
 {
-	size_t len = 0;
-	while (s[len])
-		len++;
-	return len;
-}
-static int is_printable_nonspace(char c)
-{
-	return (c >= 33 && c <= 126);
-}
+    int i = 0, d = 0;
+    long v = 0;
 
-static int parse_header_line(const char *line, int *rows, char *empty, char *obstacle, char *full)
-{
-	size_t i = 0;
-	long value = 0;
-	int has_digit = 0;
+    while (l[i] == ' ') i++;
+    while (l[i] >= '0' && l[i] <= '9') { v = v*10 + (l[i]-'0'); i++; d = 1; }
+    if (!d || v <= 0) return 0;
+    m->rows = v;
 
-	while (line[i] == ' ')
-		i++;
+    if (l[i] != ' ') return 0;
+    while (l[i] == ' ') i++;
+    if (l[i] < 33 || l[i] > 126) return 0;
+    m->empty = l[i++];
 
-	while (line[i] >= '0' && line[i] <= '9')
-	{
-		has_digit = 1;
-		value = value * 10 + (line[i] - '0');
-		if (value > 2147483647)
-			return 0;
-		i++;
-	}
-	if (!has_digit || value <= 0)
-		return 0;
-	*rows = (int)value;
-	if (line[i] != ' ')
-		return 0;
-	while (line[i] == ' ')
-		i++;
-	if (!is_printable_nonspace(line[i]))
-		return 0;
-	*empty = line[i++];
-	if (line[i] != ' ')
-		return 0;
-	while (line[i] == ' ')
-		i++;
-	if (!is_printable_nonspace(line[i]))
-		return 0;
-	*obstacle = line[i++];
-	if (line[i] != ' ')
-		return 0;
-	while (line[i] == ' ')
-		i++;
-	if (!is_printable_nonspace(line[i]))
-		return 0;
-	*full = line[i++];
-	while (line[i] != '\0' && line[i] != '\n')
-	{
-		if (line[i] != ' ')
-			return 0;
-		i++;
-	}
-	if (*empty == *obstacle || *empty == *full || *obstacle == *full)
-		return 0;
-	return 1;
+    if (l[i] != ' ') return 0;
+    while (l[i] == ' ') i++;
+    if (l[i] < 33 || l[i] > 126) return 0;
+    m->obstacle = l[i++];
+
+    if (l[i] != ' ') return 0;
+    while (l[i] == ' ') i++;
+    if (l[i] < 33 || l[i] > 126) return 0;
+    m->full = l[i++];
+
+    while (l[i] && l[i] != '\n') if (l[i++] != ' ') return 0;
+
+    if (m->empty == m->obstacle || m->empty == m->full || m->obstacle == m->full)
+        return 0;
+
+    return 1;
 }
 
-int validate_line_chars(const char *line, int len, char empty, char obstacle)
+int read_map(FILE *f, t_map *m)
 {
-	int j = 0;
+    char *l = NULL; size_t c = 0; ssize_t r;
+    int i, j;
 
-	while (j < len)
-	{
-		if (line[j] != empty && line[j] != obstacle)
-			return 0;
-		j++;
-	}
-	return 1;
+    if ((r = getline(&l, &c, f)) == -1) return free(l), 0;
+    if (!parse_header(l, m)) return free(l), 0;
+
+    m->g = malloc(sizeof(char*) * m->rows);
+    for (i = 0; i < m->rows; i++)
+    {
+        if ((r = getline(&l, &c, f)) == -1) return free(l), 0;
+        if (r > 0 && l[r-1] == '\n') r--;
+        if (r <= 0) return free(l), 0;
+
+        if (i == 0) m->cols = r;
+        else if (m->cols != r) return free(l), 0;
+
+        m->g[i] = malloc(r+1);
+        for (j = 0; j < r; j++)
+            if (l[j] != m->empty && l[j] != m->obstacle)
+                return free(l), 0;
+            else m->g[i][j] = l[j];
+        m->g[i][r] = 0;
+    }
+    free(l);
+    return 1;
 }
 
-void free_map(t_map *map)
+void solve(t_map *m)
 {
-	int i;
+    int *p = calloc(m->cols,4), *c = calloc(m->cols,4);
+    int i,j,ms=0,mi=0,mj=0;
 
-	if (!map || !map->grid)
-		return;
-	i = 0;
-	while (i < map->rows)
-	{
-		free(map->grid[i]);
-		i++;
-	}
-	free(map->grid);
-	map->grid = NULL;
-	map->rows = 0;
-	map->cols = 0;
+    for (i=0;i<m->rows;i++){
+        for (j=0;j<m->cols;j++){
+            if (m->g[i][j]==m->obstacle) c[j]=0;
+            else {
+                if (!i || !j) c[j]=1;
+                else {
+                    int a=p[j], b=c[j-1], d=p[j-1];
+                    int mn = a<b?a:b; if (d<mn) mn=d;
+                    c[j]=mn+1;
+                }
+                if (c[j]>ms){ ms=c[j]; mi=i; mj=j; }
+            }
+        }
+        int *t=p; p=c; c=t;
+    }
+    free(p); free(c);
+
+    for (i=mi; i>mi-ms; i--)
+        for (j=mj; j>mj-ms; j--)
+            m->g[i][j] = m->full;
 }
 
-int read_map_from_stream(FILE *stream, t_map *map)
+void print_map(t_map *m)
 {
-	char   *line = NULL;
-	size_t  cap = 0;
-	ssize_t r;
-	int     i;
-	int     rows;
-	char    empty;
-	char    obstacle;
-	char    full;
-	int     cols = -1;
-	char  **grid = NULL;
-
-	if (!map)
-		return 0;
-	r = getline(&line, &cap, stream);
-	if (r == -1)
-	{
-		free(line);
-		return 0;
-	}
-	if (!parse_header_line(line, &rows, &empty, &obstacle, &full))
-	{
-		free(line);
-		return 0;
-	}
-	if (rows <= 0)
-	{
-		free(line);
-		return 0;
-	}
-	grid = (char **)malloc(sizeof(char *) * rows);
-	if (!grid)
-	{
-		free(line);
-		return 0;
-	}
-	i = 0;
-	while (i < rows)
-	{
-		r = getline(&line, &cap, stream);
-		if (r == -1)
-		{
-			free(line);
-			i--;
-			while (i >= 0)
-			{
-				free(grid[i]);
-				i--;
-			}
-			free(grid);
-			return 0;
-		}
-		if (r > 0 && line[r - 1] == '\n')
-			r--;
-		if (r <= 0)
-		{
-			free(line);
-			i--;
-			while (i >= 0)
-			{
-				free(grid[i]);
-				i--;
-			}
-			free(grid);
-			return 0;
-		}
-		if (cols == -1)
-			cols = (int)r;
-		else if (cols != (int)r)
-		{
-			free(line);
-			i--;
-			while (i >= 0)
-			{
-				free(grid[i]);
-				i--;
-			}
-			free(grid);
-			return 0;
-		}
-		if (!validate_line_chars(line, (int)r, empty, obstacle))
-		{
-			free(line);
-			i--;
-			while (i >= 0)
-			{
-				free(grid[i]);
-				i--;
-			}
-			free(grid);
-			return 0;
-		}
-		grid[i] = (char *)malloc((size_t)cols + 1);
-		if (!grid[i])
-		{
-			free(line);
-			i--;
-			while (i >= 0)
-			{
-				free(grid[i]);
-				i--;
-			}
-			free(grid);
-			return 0;
-		}
-		{
-			int j = 0;
-			while (j < cols)
-			{
-				grid[i][j] = line[j];
-				j++;
-			}
-			grid[i][cols] = '\0';
-		}
-		i++;
-	}
-	r = getline(&line, &cap, stream);
-	if (r != -1)
-	{
-		free(line);
-		i = 0;
-		while (i < rows)
-		{
-			free(grid[i]);
-			i++;
-		}
-		free(grid);
-		return 0;
-	}
-	free(line);
-	map->rows = rows;
-	map->cols = cols;
-	map->empty = empty;
-	map->obstacle = obstacle;
-	map->full = full;
-	map->grid = grid;
-	return 1;
-}
-
-int min3(int a, int b, int c)
-{
-	int m = a;
-	if (b < m)
-		m = b;
-	if (c < m)
-		m = c;
-	return m;
-}
-
-int solve_bsq(t_map *map)
-{
-	int *prev;
-	int *cur;
-	int  i;
-	int  j;
-	int  max_size = 0;
-	int  max_i = 0;
-	int  max_j = 0;
-
-	if (!map || !map->grid || map->rows <= 0 || map->cols <= 0)
-		return 0;
-	prev = (int *)calloc((size_t)map->cols, sizeof(int));
-	cur = (int *)calloc((size_t)map->cols, sizeof(int));
-	if (!prev || !cur)
-	{
-		free(prev);
-		free(cur);
-		return 0;
-	}
-	i = 0;
-	while (i < map->rows)
-	{
-		j = 0;
-		while (j < map->cols)
-		{
-			if (map->grid[i][j] == map->obstacle)
-				cur[j] = 0;
-			else
-			{
-				if (i == 0 || j == 0)
-					cur[j] = 1;
-				else
-					cur[j] = 1 + min3(prev[j], cur[j - 1], prev[j - 1]);
-				if (cur[j] > max_size)
-				{
-					max_size = cur[j];
-					max_i = i;
-					max_j = j;
-				}
-			}
-			j++;
-		}
-		{
-			int *tmp = prev;
-			prev = cur;
-			cur = tmp;
-		}
-		i++;
-	}
-	free(prev);
-	free(cur);
-	if (max_size > 0)
-	{
-		int r = max_i;
-		while (r > max_i - max_size)
-		{
-			int c = max_j;
-			while (c > max_j - max_size)
-			{
-				map->grid[r][c] = map->full;
-				c--;
-			}
-			r--;
-		}
-	}
-	return 1;
-}
-
-int print_map(const t_map *map, FILE *out)
-{
-	int i;
-
-	if (!map || !map->grid || !out)
-		return 0;
-	i = 0;
-	while (i < map->rows)
-	{
-		fputs(map->grid[i], out);
-		fprintf(out, "\n");
-		i++;
-	}
-	return 1;
+    for (int i=0;i<m->rows;i++)
+        printf("%s\n", m->g[i]);
 }
